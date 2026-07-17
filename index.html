@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Database Viewer</title>
+
+<style>
+body {
+    font-family: Arial, sans-serif;
+    background: #111;
+    color: white;
+    margin: 30px;
+}
+
+input {
+    padding: 8px;
+    width: 300px;
+}
+
+button {
+    padding: 8px 14px;
+    cursor: pointer;
+}
+
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin-top: 10px;
+}
+
+th, td {
+    border: 1px solid #444;
+    padding: 6px 10px;
+    text-align: left;
+    vertical-align: top;
+}
+
+th {
+    background: #222;
+}
+
+tr:nth-child(even) {
+    background: #1a1a1a;
+}
+
+.section {
+    margin-top: 40px;
+}
+
+.error {
+    color: #ff6666;
+    margin-top: 20px;
+}
+
+.success {
+    color: #66ff99;
+    margin-top: 20px;
+}
+</style>
+</head>
+<body>
+
+<h1>Database Viewer</h1>
+
+<input
+    id="secret"
+    type="password"
+    placeholder="Enter Secret Key">
+
+<button id="loadBtn">
+    Load Database
+</button>
+
+<div id="status"></div>
+
+<div id="content"></div>
+
+<script>
+const WORKER_URL = "https://YOUR-WORKER.workers.dev/";
+
+document.getElementById("loadBtn").onclick = loadDatabase;
+
+async function loadDatabase() {
+
+    const key = document.getElementById("secret").value.trim();
+
+    if (!key) return;
+
+    const status = document.getElementById("status");
+    const content = document.getElementById("content");
+
+    status.textContent = "Loading...";
+    status.className = "";
+
+    content.innerHTML = "";
+
+    try {
+
+        const res = await fetch(`${WORKER_URL}?key=${encodeURIComponent(key)}`);
+
+        if (!res.ok) {
+            throw new Error(await res.text());
+        }
+
+        const db = await res.json();
+
+        status.textContent = "Loaded successfully.";
+        status.className = "success";
+
+        for (const [tableName, table] of Object.entries(db)) {
+
+            const section = document.createElement("div");
+            section.className = "section";
+
+            const title = document.createElement("h2");
+            title.textContent = `${tableName} (${table.rowCount} rows)`;
+
+            section.appendChild(title);
+
+            if (table.rows.length === 0) {
+
+                const p = document.createElement("p");
+                p.textContent = "No rows.";
+
+                section.appendChild(p);
+
+            } else {
+
+                const columns = Object.keys(table.rows[0]);
+
+                const tableEl = document.createElement("table");
+
+                const thead = document.createElement("thead");
+                const headRow = document.createElement("tr");
+
+                for (const column of columns) {
+
+                    const th = document.createElement("th");
+                    th.textContent = column;
+
+                    headRow.appendChild(th);
+
+                }
+
+                thead.appendChild(headRow);
+                tableEl.appendChild(thead);
+
+                const tbody = document.createElement("tbody");
+
+                for (const row of table.rows) {
+
+                    const tr = document.createElement("tr");
+
+                    for (const column of columns) {
+
+                        const td = document.createElement("td");
+
+                        let value = row[column];
+
+                        if (typeof value === "object" && value !== null) {
+                            value = JSON.stringify(value, null, 2);
+                        }
+
+                        td.textContent = value;
+
+                        tr.appendChild(td);
+
+                    }
+
+                    tbody.appendChild(tr);
+
+                }
+
+                tableEl.appendChild(tbody);
+
+                section.appendChild(tableEl);
+
+            }
+
+            content.appendChild(section);
+
+        }
+
+    } catch (err) {
+
+        status.textContent = err.message;
+        status.className = "error";
+
+    }
+
+}
+</script>
+
+</body>
+</html>

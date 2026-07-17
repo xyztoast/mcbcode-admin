@@ -8,19 +8,50 @@
 <style>
 body {
     font-family: Arial, sans-serif;
-    background: #111;
-    color: white;
+    background: #0c0c0c;
+    color: #05ee93;
     margin: 30px;
 }
 
-input {
+input, textarea, select {
     padding: 8px;
+    background: #111;
+    color: #05ee93;
+    border: 1px solid #444;
+    border-radius: 6px;
+    font-family: inherit;
+}
+
+input#secret, input#globalSearch {
     width: 300px;
 }
 
 button {
     padding: 8px 14px;
     cursor: pointer;
+    background: #1a1a1a;
+    color: #05ee93;
+    border: 1px solid #444;
+    border-radius: 6px;
+    margin-right: 6px;
+}
+
+button:hover {
+    background: #2a2a2a;
+}
+
+td {
+    cursor: pointer;
+    border-radius: 6px;
+}
+
+td:hover {
+    background: #2a2a2a;
+}
+
+td input {
+    width: 100%;
+    padding: 2px 4px;
 }
 
 table {
@@ -34,10 +65,24 @@ th, td {
     padding: 6px 10px;
     text-align: left;
     vertical-align: top;
+    border-radius: 6px;
 }
 
 th {
     background: #222;
+    cursor: pointer;
+    user-select: none;
+}
+
+th:hover {
+    background: #2f2f2f;
+}
+
+thead th {
+    position: sticky;
+    top: 0;
+    background: #222;
+    z-index: 10;
 }
 
 tr:nth-child(even) {
@@ -46,6 +91,13 @@ tr:nth-child(even) {
 
 .section {
     margin-top: 40px;
+}
+
+.section-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
 }
 
 .error {
@@ -57,139 +109,678 @@ tr:nth-child(even) {
     color: #66ff99;
     margin-top: 20px;
 }
+
+.schema-box, .insert-box {
+    display: none;
+    background: #151515;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 10px;
+    margin-top: 8px;
+    font-size: 13px;
+}
+
+.insert-box label {
+    display: inline-block;
+    margin: 4px 8px 4px 0;
+}
+
+.search-box {
+    width: 220px;
+}
+
+#sqlInput {
+    width: 500px;
+    max-width: 90%;
+}
+
+.small-note {
+    font-size: 12px;
+    color: #888;
+}
+
+.pager {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+#backupList div {
+    padding: 4px 0;
+    border-bottom: 1px solid #333;
+}
 </style>
 </head>
 <body>
 
-<h1>Database Viewer</h1>
+<h1>mcbCode admin</h1>
 
-<input
-    id="secret"
-    type="password"
-    placeholder="Enter Secret Key">
+<input id="secret" placeholder="secret key">
+<button id="loadBtn">Load Database</button>
+<button id="autoRefreshBtn">Auto-refresh: OFF</button>
 
-<button id="loadBtn">
-    Load Database
-</button>
+<br><br>
+<input id="globalSearch" placeholder="search across every table...">
 
 <div id="status"></div>
+
+<div id="sqlSection" style="display:none; margin-top:40px;">
+  <h2>SQL Console</h2>
+
+  <textarea id="sqlInput" rows="4" placeholder="SELECT * FROM users LIMIT 10;"></textarea>
+  <div class="small-note">ctrl+enter (or cmd+enter) runs the query</div>
+
+  <br><br>
+
+  <button onclick="runSQL()">Run SQL</button>
+  <select id="historySelect" onchange="loadFromHistory()">
+    <option value="">-- query history --</option>
+  </select>
+
+  <pre id="sqlResult"></pre>
+</div>
+
+<div id="backupSection" style="display:none; margin-top:40px;">
+  <h2>Backups</h2>
+  <div class="small-note">auto-backs up every 48hrs (via cron trigger). list below refreshes each time you load the db.</div>
+  <br>
+  <button onclick="runBackupNow()">Run Backup Now</button>
+  <button onclick="loadBackupList()">Refresh List</button>
+  <div id="backupList" style="margin-top:10px;"></div>
+</div>
 
 <div id="content"></div>
 
 <script>
 const WORKER_URL = "https://mcbcadmin.mcbcode.com/";
 
-document.getElementById("loadBtn").onclick = loadDatabase;
+let autoRefreshEnabled = false;
+let refreshInterval = null;
+let currentDB = {}; // last loaded data, kept so search/sort/page don't need a refetch
+const PAGE_SIZE = 25;
 
-async function loadDatabase() {
+document.getElementById("loadBtn").onclick = () => loadDatabase(false);
+document.getElementById("autoRefreshBtn").onclick = toggleAutoRefresh;
+document.getElementById("globalSearch").oninput = (e) => applyGlobalSearch(e.target.value);
 
-    const key = document.getElementById("secret").value.trim();
+function getKey() {
+    return document.getElementById("secret").value.trim();
+}
 
+function authHeaders(extra = {}) {
+    return { "x-admin-key": getKey(), ...extra };
+}
+
+function toggleAutoRefresh() {
+    autoRefreshEnabled = !autoRefreshEnabled;
+    const btn = document.getElementById("autoRefreshBtn");
+    btn.textContent = "Auto-refresh: " + (autoRefreshEnabled ? "ON" : "OFF");
+
+    if (autoRefreshEnabled) startAutoRefresh();
+    else if (refreshInterval) clearInterval(refreshInterval);
+}
+
+function startAutoRefresh() {
+    if (refreshInterval) clearInterval(refreshInterval);
+    refreshInterval = setInterval(() => {
+        if (autoRefreshEnabled) loadDatabase(true);
+    }, 5000);
+}
+
+async function loadDatabase(isRefresh = false) {
+    const key = getKey();
     if (!key) return;
 
     const status = document.getElementById("status");
-    const content = document.getElementById("content");
 
-    status.textContent = "Loading...";
-    status.className = "";
-
-    content.innerHTML = "";
+    if (!isRefresh) {
+        status.textContent = "Loading...";
+        status.className = "";
+    }
 
     try {
+        const res = await fetch(WORKER_URL, { headers: authHeaders() });
 
-        const res = await fetch(`${WORKER_URL}?key=${encodeURIComponent(key)}`);
-
-        if (!res.ok) {
-            throw new Error(await res.text());
-        }
+        if (!res.ok) throw new Error(await res.text());
 
         const db = await res.json();
 
-        status.textContent = "Loaded successfully.";
-        status.className = "success";
+        // keep existing per-table state (query/page/sort) across refreshes
+        for (const [name, table] of Object.entries(db)) {
+            const old = currentDB[name];
+            if (old) {
+                table._query = old._query;
+                table._page = old._page;
+                table._sortCol = old._sortCol;
+                table._sortDir = old._sortDir;
+            }
+        }
 
-        for (const [tableName, table] of Object.entries(db)) {
+        currentDB = db;
 
-            const section = document.createElement("div");
-            section.className = "section";
+        if (!isRefresh) {
+            status.textContent = "Loaded successfully.";
+            status.className = "success";
+            document.getElementById("sqlSection").style.display = "block";
+            document.getElementById("backupSection").style.display = "block";
+            loadBackupList();
+        }
 
-            const title = document.createElement("h2");
-            title.textContent = `${tableName} (${table.rowCount} rows)`;
+        renderAll();
 
-            section.appendChild(title);
+    } catch (err) {
+        status.textContent = err.message;
+        status.className = "error";
+    }
+}
 
-            if (table.rows.length === 0) {
+function renderAll() {
+    const content = document.getElementById("content");
+    const newContent = document.createElement("div");
 
-                const p = document.createElement("p");
-                p.textContent = "No rows.";
+    for (const [tableName, table] of Object.entries(currentDB)) {
+        newContent.appendChild(renderTable(tableName, table));
+    }
 
-                section.appendChild(p);
+    content.replaceChildren(...newContent.childNodes);
+}
 
-            } else {
+function applyGlobalSearch(query) {
+    for (const table of Object.values(currentDB)) {
+        table._query = query;
+        table._page = 1;
+    }
+    renderAll();
+}
 
-                const columns = Object.keys(table.rows[0]);
+function matchesQuery(row, query) {
+    if (!query) return true;
+    const lower = query.toLowerCase();
+    return Object.values(row).some(v => (v ?? "").toString().toLowerCase().includes(lower));
+}
 
-                const tableEl = document.createElement("table");
+function renderTable(tableName, table) {
+    const section = document.createElement("div");
+    section.className = "section";
+    section.dataset.table = tableName;
 
-                const thead = document.createElement("thead");
-                const headRow = document.createElement("tr");
+    const header = document.createElement("div");
+    header.className = "section-header";
 
-                for (const column of columns) {
+    const title = document.createElement("h2");
+    title.textContent = `${tableName} (${table.rowCount} rows)`;
+    header.appendChild(title);
 
-                    const th = document.createElement("th");
-                    th.textContent = column;
+    const search = document.createElement("input");
+    search.className = "search-box";
+    search.placeholder = "filter this table...";
+    search.value = table._query || "";
+    search.oninput = () => {
+        table._query = search.value;
+        table._page = 1;
+        renderAll();
+    };
+    header.appendChild(search);
 
-                    headRow.appendChild(th);
+    const schemaBtn = document.createElement("button");
+    schemaBtn.textContent = "Schema";
+    schemaBtn.onclick = () => {
+        const box = section.querySelector(".schema-box");
+        box.style.display = box.style.display === "block" ? "none" : "block";
+    };
+    header.appendChild(schemaBtn);
 
-                }
+    const addBtn = document.createElement("button");
+    addBtn.textContent = "Add Row";
+    addBtn.onclick = () => {
+        const box = section.querySelector(".insert-box");
+        box.style.display = box.style.display === "block" ? "none" : "block";
+    };
+    header.appendChild(addBtn);
 
-                thead.appendChild(headRow);
-                tableEl.appendChild(thead);
+    const exportCsvBtn = document.createElement("button");
+    exportCsvBtn.textContent = "Export CSV";
+    exportCsvBtn.onclick = () => exportCSV(tableName, table);
+    header.appendChild(exportCsvBtn);
 
-                const tbody = document.createElement("tbody");
+    const exportJsonBtn = document.createElement("button");
+    exportJsonBtn.textContent = "Export JSON";
+    exportJsonBtn.onclick = () => exportJSON(tableName, table);
+    header.appendChild(exportJsonBtn);
 
-                for (const row of table.rows) {
+    section.appendChild(header);
 
-                    const tr = document.createElement("tr");
+    // schema box
+    const schemaBox = document.createElement("div");
+    schemaBox.className = "schema-box";
+    if (table.schema) {
+        schemaBox.textContent = table.schema
+            .map(c => `${c.name} (${c.type})${c.pk ? " [PRIMARY KEY]" : ""}${c.notnull ? " NOT NULL" : ""}`)
+            .join("\n");
+        schemaBox.style.whiteSpace = "pre";
+    }
+    section.appendChild(schemaBox);
 
-                    for (const column of columns) {
+    // insert row box
+    const insertBox = document.createElement("div");
+    insertBox.className = "insert-box";
+    if (table.schema) {
+        const form = document.createElement("div");
+        const inputs = {};
 
-                        const td = document.createElement("td");
+        for (const col of table.schema) {
+            const label = document.createElement("label");
+            label.textContent = col.name + (col.pk ? " (pk, leave blank for auto)" : "") + ": ";
 
-                        let value = row[column];
+            const input = document.createElement("input");
+            input.style.width = "140px";
+            inputs[col.name] = input;
 
-                        if (typeof value === "object" && value !== null) {
-                            value = JSON.stringify(value, null, 2);
-                        }
+            label.appendChild(input);
+            form.appendChild(label);
+        }
 
-                        td.textContent = value;
+        const submitBtn = document.createElement("button");
+        submitBtn.textContent = "Insert";
+        submitBtn.style.marginTop = "8px";
+        submitBtn.onclick = () => insertRow(tableName, inputs);
 
-                        tr.appendChild(td);
+        insertBox.appendChild(form);
+        insertBox.appendChild(document.createElement("br"));
+        insertBox.appendChild(submitBtn);
+    }
+    section.appendChild(insertBox);
 
-                    }
+    if (table.rows.length === 0) {
+        const p = document.createElement("p");
+        p.textContent = "No rows.";
+        section.appendChild(p);
+        return section;
+    }
 
-                    tbody.appendChild(tr);
+    const columns = Object.keys(table.rows[0]);
+    const pkColumn = table.schema ? (table.schema.find(c => c.pk)?.name || columns[0]) : columns[0];
 
-                }
+    // filter + sort (over the full row set, before paging)
+    let matches = table.rows.filter(r => matchesQuery(r, table._query));
 
-                tableEl.appendChild(tbody);
+    if (table._sortCol) {
+        const col = table._sortCol, dir = table._sortDir || 1;
+        matches = [...matches].sort((a, b) => {
+            const va = a[col], vb = b[col];
+            if (va === vb) return 0;
+            if (va === null || va === undefined) return 1;
+            if (vb === null || vb === undefined) return -1;
+            return (va > vb ? 1 : -1) * dir;
+        });
+    }
 
-                section.appendChild(tableEl);
+    const totalPages = Math.max(1, Math.ceil(matches.length / PAGE_SIZE));
+    table._page = Math.min(table._page || 1, totalPages);
+    const pageRows = matches.slice((table._page - 1) * PAGE_SIZE, table._page * PAGE_SIZE);
 
+    const tableEl = document.createElement("table");
+
+    const thead = document.createElement("thead");
+    const headRow = document.createElement("tr");
+
+    for (const column of columns) {
+        const th = document.createElement("th");
+        th.textContent = column + (table._sortCol === column ? (table._sortDir === -1 ? " ▼" : " ▲") : "");
+        th.onclick = () => {
+            if (table._sortCol !== column) { table._sortCol = column; table._sortDir = 1; }
+            else table._sortDir *= -1;
+            renderAll();
+        };
+        headRow.appendChild(th);
+    }
+
+    const actionTh = document.createElement("th");
+    actionTh.textContent = "actions";
+    headRow.appendChild(actionTh);
+
+    thead.appendChild(headRow);
+    tableEl.appendChild(thead);
+
+    const tbody = document.createElement("tbody");
+
+    for (const row of pageRows) {
+        const tr = document.createElement("tr");
+
+        for (const column of columns) {
+            const td = document.createElement("td");
+            let value = row[column];
+
+            if (typeof value === "object" && value !== null) {
+                value = JSON.stringify(value, null, 2);
             }
 
-            content.appendChild(section);
+            td.textContent = value ?? "";
 
+            // single click = copy
+            td.onclick = async () => {
+                await navigator.clipboard.writeText(value ?? "");
+                const old = td.textContent;
+                td.textContent = "copied!";
+                setTimeout(() => { td.textContent = old; }, 800);
+            };
+
+            // double click = edit inline
+            td.ondblclick = (e) => {
+                e.stopPropagation();
+                startCellEdit(td, tableName, pkColumn, row[pkColumn], column, value ?? "");
+            };
+
+            tr.appendChild(td);
+        }
+
+        const actionTd = document.createElement("td");
+        const delBtn = document.createElement("button");
+        delBtn.textContent = "delete";
+        delBtn.onclick = () => deleteRow(tableName, pkColumn, row[pkColumn]);
+        actionTd.appendChild(delBtn);
+        tr.appendChild(actionTd);
+
+        tbody.appendChild(tr);
+    }
+
+    tableEl.appendChild(tbody);
+    section.appendChild(tableEl);
+
+    // pager
+    const pager = document.createElement("div");
+    pager.className = "pager";
+
+    const prevBtn = document.createElement("button");
+    prevBtn.textContent = "Prev";
+    prevBtn.disabled = table._page <= 1;
+    prevBtn.onclick = () => { table._page--; renderAll(); };
+
+    const nextBtn = document.createElement("button");
+    nextBtn.textContent = "Next";
+    nextBtn.disabled = table._page >= totalPages;
+    nextBtn.onclick = () => { table._page++; renderAll(); };
+
+    const pageInfo = document.createElement("span");
+    pageInfo.textContent = `page ${table._page} of ${totalPages} (${matches.length} matching rows)`;
+
+    pager.appendChild(prevBtn);
+    pager.appendChild(nextBtn);
+    pager.appendChild(pageInfo);
+    section.appendChild(pager);
+
+    return section;
+}
+
+function startCellEdit(td, tableName, pkColumn, pkValue, column, currentValue) {
+    const input = document.createElement("input");
+    input.value = currentValue;
+    td.textContent = "";
+    td.appendChild(input);
+    input.focus();
+
+    const save = async () => {
+        const newValue = input.value;
+        if (newValue === currentValue) {
+            td.textContent = currentValue;
+            return;
+        }
+        await updateCell(tableName, pkColumn, pkValue, column, newValue);
+    };
+
+    input.onblur = save;
+    input.onkeydown = (e) => {
+        if (e.key === "Enter") input.blur();
+        if (e.key === "Escape") { td.textContent = currentValue; input.onblur = null; }
+    };
+}
+
+function sqlLiteral(v) {
+    if (v === "" || v === null || v === undefined) return "NULL";
+    if (!isNaN(v) && v.trim() !== "") return v;
+    return `'${v.toString().replace(/'/g, "''")}'`;
+}
+
+async function updateCell(tableName, pkColumn, pkValue, column, newValue) {
+    const sql = `UPDATE "${tableName}" SET "${column}" = ${sqlLiteral(newValue)} WHERE "${pkColumn}" = ${sqlLiteral(pkValue)};`;
+
+    try {
+        const res = await fetch(WORKER_URL, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ sql })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        await loadDatabase(true);
+    } catch (err) {
+        alert("update failed: " + err.message);
+        await loadDatabase(true);
+    }
+}
+
+async function insertRow(tableName, inputs) {
+    const cols = [];
+    const vals = [];
+
+    for (const [col, input] of Object.entries(inputs)) {
+        if (input.value.trim() === "") continue; // skip blanks, lets autoincrement/defaults handle it
+        cols.push(`"${col}"`);
+        vals.push(sqlLiteral(input.value));
+    }
+
+    if (cols.length === 0) {
+        alert("fill in at least one field");
+        return;
+    }
+
+    const sql = `INSERT INTO "${tableName}" (${cols.join(", ")}) VALUES (${vals.join(", ")});`;
+
+    try {
+        const res = await fetch(WORKER_URL, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ sql })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+        await loadDatabase(true);
+    } catch (err) {
+        alert("insert failed: " + err.message);
+    }
+}
+
+function exportCSV(tableName, table) {
+    if (table.rows.length === 0) return;
+
+    const columns = Object.keys(table.rows[0]);
+    const lines = [columns.join(",")];
+
+    for (const row of table.rows) {
+        const line = columns.map(c => {
+            let v = row[c];
+            if (typeof v === "object" && v !== null) v = JSON.stringify(v);
+            v = (v ?? "").toString().replace(/"/g, '""');
+            return `"${v}"`;
+        }).join(",");
+        lines.push(line);
+    }
+
+    downloadBlob(lines.join("\n"), `${tableName}.csv`, "text/csv");
+}
+
+function exportJSON(tableName, table) {
+    downloadBlob(JSON.stringify(table.rows, null, 2), `${tableName}.json`, "application/json");
+}
+
+function downloadBlob(content, filename, type) {
+    const blob = new Blob([content], { type });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    a.click();
+}
+
+async function deleteRow(tableName, pkColumn, pkValue) {
+    if (!confirm(`delete row where ${pkColumn} = ${pkValue} from ${tableName}? this cant be undone`)) return;
+
+    const sql = `DELETE FROM "${tableName}" WHERE "${pkColumn}" = ${sqlLiteral(pkValue)};`;
+
+    try {
+        const res = await fetch(WORKER_URL, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ sql })
+        });
+
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        await loadDatabase(true);
+
+    } catch (err) {
+        alert("delete failed: " + err.message);
+    }
+}
+
+// --- SQL console ---
+
+let queryHistory = JSON.parse(localStorage.getItem("mcbc_sql_history") || "[]");
+
+function saveToHistory(sql) {
+    queryHistory = queryHistory.filter(q => q !== sql);
+    queryHistory.unshift(sql);
+    queryHistory = queryHistory.slice(0, 10);
+    localStorage.setItem("mcbc_sql_history", JSON.stringify(queryHistory));
+    renderHistory();
+}
+
+function renderHistory() {
+    const select = document.getElementById("historySelect");
+    select.innerHTML = '<option value="">-- query history --</option>';
+    queryHistory.forEach((q, i) => {
+        const opt = document.createElement("option");
+        opt.value = i;
+        opt.textContent = q.length > 50 ? q.slice(0, 50) + "..." : q;
+        select.appendChild(opt);
+    });
+}
+
+function loadFromHistory() {
+    const select = document.getElementById("historySelect");
+    if (select.value === "") return;
+    document.getElementById("sqlInput").value = queryHistory[select.value];
+}
+
+document.getElementById("sqlInput").addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") runSQL();
+});
+
+async function runSQL() {
+    const sql = document.getElementById("sqlInput").value.trim();
+    const result = document.getElementById("sqlResult");
+
+    if (!sql) return;
+
+    result.textContent = "Running...";
+    saveToHistory(sql);
+
+    try {
+        const res = await fetch(WORKER_URL, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ sql })
+        });
+
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        result.textContent = JSON.stringify(data, null, 2) + `\n\n(took ${data.ms}ms)`;
+
+        await loadDatabase(true);
+
+    } catch (err) {
+        result.textContent = err.message;
+    }
+}
+
+// --- backups ---
+
+async function loadBackupList() {
+    const list = document.getElementById("backupList");
+    list.textContent = "loading...";
+
+    try {
+        const res = await fetch(`${WORKER_URL}?action=list_backups`, { headers: authHeaders() });
+        const backups = await res.json();
+
+        if (backups.error) throw new Error(backups.error);
+
+        if (backups.length === 0) {
+            list.textContent = "no backups yet.";
+            return;
+        }
+
+        list.replaceChildren();
+
+        for (const b of backups) {
+            const row = document.createElement("div");
+            const kb = (b.size / 1024).toFixed(1);
+            row.textContent = `#${b.id} — ${b.created_at} (${kb} KB) `;
+
+            const dlBtn = document.createElement("button");
+            dlBtn.textContent = "Download";
+            dlBtn.onclick = () => downloadBackup(b.id, b.created_at);
+
+            row.appendChild(dlBtn);
+            list.appendChild(row);
         }
 
     } catch (err) {
-
-        status.textContent = err.message;
-        status.className = "error";
-
+        list.textContent = "error: " + err.message;
     }
-
 }
+
+async function downloadBackup(id, createdAt) {
+    try {
+        const res = await fetch(`${WORKER_URL}?action=get_backup&id=${id}`, { headers: authHeaders() });
+        const backup = await res.json();
+        if (backup.error) throw new Error(backup.error);
+
+        downloadBlob(
+            JSON.stringify(backup.data, null, 2),
+            `backup-${id}-${createdAt.slice(0, 10)}.json`,
+            "application/json"
+        );
+    } catch (err) {
+        alert("download failed: " + err.message);
+    }
+}
+
+async function runBackupNow() {
+    try {
+        const res = await fetch(WORKER_URL, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ action: "backup_now" })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        if (data.backup.skipped) {
+            alert("skipped: " + data.backup.reason);
+        } else {
+            alert("backup created at " + data.backup.created_at);
+        }
+
+        await loadBackupList();
+    } catch (err) {
+        alert("backup failed: " + err.message);
+    }
+}
+
+renderHistory();
 </script>
 
 </body>

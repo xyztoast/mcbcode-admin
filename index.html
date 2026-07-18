@@ -9,7 +9,7 @@
 body {
     font-family: Arial, sans-serif;
     background: #0c0c0c;
-    color: #ffffff;
+    color: #05ee93;
     margin: 30px;
 }
 
@@ -100,6 +100,13 @@ tr:nth-child(even) {
     flex-wrap: wrap;
 }
 
+.collapse-toggle {
+    cursor: pointer;
+    user-select: none;
+    font-size: 14px;
+    color: #05ee93;
+}
+
 .error {
     color: #ff6666;
     margin-top: 20px;
@@ -150,6 +157,22 @@ tr:nth-child(even) {
     padding: 4px 0;
     border-bottom: 1px solid #333;
 }
+
+#navBar {
+    margin-top: 10px;
+    font-size: 13px;
+}
+
+#navBar a {
+    color: #05ee93;
+    margin-right: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+}
+
+.resolved-hint {
+    color: #888;
+}
 </style>
 </head>
 <body>
@@ -159,11 +182,18 @@ tr:nth-child(even) {
 <input id="secret" placeholder="secret key">
 <button id="loadBtn">Load Database</button>
 <button id="autoRefreshBtn">Auto-refresh: OFF</button>
+<button id="collapseAllBtn">Collapse All</button>
 
 <br><br>
 <input id="globalSearch" placeholder="search across every table...">
+<label style="margin-left: 10px;">
+    <input type="checkbox" id="resolveUsersToggle" style="width:auto;">
+    show usernames instead of owner_id / user_id
+</label>
 
 <div id="status"></div>
+<div id="lastLoaded" class="small-note"></div>
+<div id="navBar"></div>
 
 <div id="sqlSection" style="display:none; margin-top:40px;">
   <h2>SQL Console</h2>
@@ -197,12 +227,16 @@ const WORKER_URL = "https://mcbcadmin.mcbcode.com/";
 
 let autoRefreshEnabled = false;
 let refreshInterval = null;
-let currentDB = {}; // last loaded data, kept so search/sort/page don't need a refetch
+let currentDB = {}; // last loaded data, kept so search/sort/page/collapse don't need a refetch
+let allCollapsed = false;
 const PAGE_SIZE = 25;
+const USER_ID_COLUMNS = ["owner_id", "user_id"]; // column names that get resolved to usernames when the toggle is on
 
 document.getElementById("loadBtn").onclick = () => loadDatabase(false);
 document.getElementById("autoRefreshBtn").onclick = toggleAutoRefresh;
+document.getElementById("collapseAllBtn").onclick = toggleCollapseAll;
 document.getElementById("globalSearch").oninput = (e) => applyGlobalSearch(e.target.value);
+document.getElementById("resolveUsersToggle").onchange = () => renderAll();
 
 function getKey() {
     return document.getElementById("secret").value.trim();
@@ -228,6 +262,15 @@ function startAutoRefresh() {
     }, 5000);
 }
 
+function toggleCollapseAll() {
+    allCollapsed = !allCollapsed;
+    document.getElementById("collapseAllBtn").textContent = allCollapsed ? "Expand All" : "Collapse All";
+    for (const table of Object.values(currentDB)) {
+        table._collapsed = allCollapsed;
+    }
+    renderAll();
+}
+
 async function loadDatabase(isRefresh = false) {
     const key = getKey();
     if (!key) return;
@@ -246,7 +289,7 @@ async function loadDatabase(isRefresh = false) {
 
         const db = await res.json();
 
-        // keep existing per-table state (query/page/sort) across refreshes
+        // keep existing per-table state (query/page/sort/collapse) across refreshes
         for (const [name, table] of Object.entries(db)) {
             const old = currentDB[name];
             if (old) {
@@ -254,6 +297,7 @@ async function loadDatabase(isRefresh = false) {
                 table._page = old._page;
                 table._sortCol = old._sortCol;
                 table._sortDir = old._sortDir;
+                table._collapsed = old._collapsed;
             }
         }
 
@@ -267,11 +311,30 @@ async function loadDatabase(isRefresh = false) {
             loadBackupList();
         }
 
+        document.getElementById("lastLoaded").textContent =
+            "last loaded: " + new Date().toLocaleTimeString();
+
+        renderNavBar();
         renderAll();
 
     } catch (err) {
         status.textContent = err.message;
         status.className = "error";
+    }
+}
+
+function renderNavBar() {
+    const nav = document.getElementById("navBar");
+    nav.replaceChildren();
+
+    for (const tableName of Object.keys(currentDB)) {
+        const a = document.createElement("a");
+        a.textContent = tableName;
+        a.onclick = () => {
+            const section = document.querySelector(`.section[data-table="${tableName}"]`);
+            if (section) section.scrollIntoView({ behavior: "smooth" });
+        };
+        nav.appendChild(a);
     }
 }
 
@@ -300,6 +363,26 @@ function matchesQuery(row, query) {
     return Object.values(row).some(v => (v ?? "").toString().toLowerCase().includes(lower));
 }
 
+// looks up a username for a given id by checking the "users" table already loaded.
+// doesn't touch the actual db data, just used to decide what to display.
+function resolveUsername(id) {
+    const usersTable = Object.entries(currentDB).find(([name]) => name.toLowerCase() === "users");
+    if (!usersTable) return null;
+
+    const [, table] = usersTable;
+    const pkCol = table.schema ? (table.schema.find(c => c.pk)?.name || "id") : "id";
+
+    const row = table.rows.find(r => String(r[pkCol]) === String(id));
+    if (!row) return null;
+
+    const labelCol = ["username", "name", "display_name", "email"].find(c => c in row);
+    if (labelCol) return row[labelCol];
+
+    // fallback: first column that isn't the pk
+    const fallbackCol = Object.keys(row).find(c => c !== pkCol);
+    return fallbackCol ? row[fallbackCol] : null;
+}
+
 function renderTable(tableName, table) {
     const section = document.createElement("div");
     section.className = "section";
@@ -308,9 +391,29 @@ function renderTable(tableName, table) {
     const header = document.createElement("div");
     header.className = "section-header";
 
+    const collapseToggle = document.createElement("span");
+    collapseToggle.className = "collapse-toggle";
+    collapseToggle.textContent = table._collapsed ? "▶" : "▼";
+    collapseToggle.onclick = () => {
+        table._collapsed = !table._collapsed;
+        renderAll();
+    };
+    header.appendChild(collapseToggle);
+
     const title = document.createElement("h2");
+    title.style.margin = "0";
     title.textContent = `${tableName} (${table.rowCount} rows)`;
+    title.onclick = () => {
+        table._collapsed = !table._collapsed;
+        renderAll();
+    };
+    title.style.cursor = "pointer";
     header.appendChild(title);
+
+    if (table._collapsed) {
+        section.appendChild(header);
+        return section;
+    }
 
     const search = document.createElement("input");
     search.className = "search-box";
@@ -401,6 +504,7 @@ function renderTable(tableName, table) {
 
     const columns = Object.keys(table.rows[0]);
     const pkColumn = table.schema ? (table.schema.find(c => c.pk)?.name || columns[0]) : columns[0];
+    const resolveUsers = document.getElementById("resolveUsersToggle").checked;
 
     // filter + sort (over the full row set, before paging)
     let matches = table.rows.filter(r => matchesQuery(r, table._query));
@@ -456,20 +560,37 @@ function renderTable(tableName, table) {
                 value = JSON.stringify(value, null, 2);
             }
 
-            td.textContent = value ?? "";
+            const rawText = value ?? "";
 
-            // single click = copy
+            // display-only: show the username next to the id, never touches the real data
+            if (resolveUsers && USER_ID_COLUMNS.includes(column.toLowerCase()) && rawText !== "") {
+                const username = resolveUsername(rawText);
+                if (username) {
+                    td.textContent = "";
+                    td.appendChild(document.createTextNode(rawText + " "));
+                    const hint = document.createElement("span");
+                    hint.className = "resolved-hint";
+                    hint.textContent = `(${username})`;
+                    td.appendChild(hint);
+                } else {
+                    td.textContent = rawText;
+                }
+            } else {
+                td.textContent = rawText;
+            }
+
+            // single click = copy the raw value (not the resolved username)
             td.onclick = async () => {
-                await navigator.clipboard.writeText(value ?? "");
-                const old = td.textContent;
+                await navigator.clipboard.writeText(rawText);
+                const old = td.innerHTML;
                 td.textContent = "copied!";
-                setTimeout(() => { td.textContent = old; }, 800);
+                setTimeout(() => { td.innerHTML = old; }, 800);
             };
 
             // double click = edit inline
             td.ondblclick = (e) => {
                 e.stopPropagation();
-                startCellEdit(td, tableName, pkColumn, row[pkColumn], column, value ?? "");
+                startCellEdit(td, tableName, pkColumn, row[pkColumn], column, rawText);
             };
 
             tr.appendChild(td);
@@ -538,7 +659,7 @@ function startCellEdit(td, tableName, pkColumn, pkValue, column, currentValue) {
 
 function sqlLiteral(v) {
     if (v === "" || v === null || v === undefined) return "NULL";
-    if (!isNaN(v) && v.trim() !== "") return v;
+    if (!isNaN(v) && v.toString().trim() !== "") return v;
     return `'${v.toString().replace(/'/g, "''")}'`;
 }
 
@@ -733,7 +854,12 @@ async function loadBackupList() {
             dlBtn.textContent = "Download";
             dlBtn.onclick = () => downloadBackup(b.id, b.created_at);
 
+            const delBtn = document.createElement("button");
+            delBtn.textContent = "Delete";
+            delBtn.onclick = () => deleteBackup(b.id);
+
             row.appendChild(dlBtn);
+            row.appendChild(delBtn);
             list.appendChild(row);
         }
 
@@ -755,6 +881,25 @@ async function downloadBackup(id, createdAt) {
         );
     } catch (err) {
         alert("download failed: " + err.message);
+    }
+}
+
+async function deleteBackup(id) {
+    if (!confirm(`delete backup #${id}? this cant be undone.`)) return;
+    if (!confirm(`really sure? this is your last chance to back out of deleting backup #${id}.`)) return;
+
+    try {
+        const res = await fetch(WORKER_URL, {
+            method: "POST",
+            headers: authHeaders({ "Content-Type": "application/json" }),
+            body: JSON.stringify({ action: "delete_backup", id })
+        });
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        await loadBackupList();
+    } catch (err) {
+        alert("delete failed: " + err.message);
     }
 }
 

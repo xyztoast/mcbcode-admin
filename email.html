@@ -246,7 +246,7 @@ async function unlock() {
             return;
         }
 
-        if (!res.ok) throw new Error("worker didn't respond right, check WORKER_URL");
+        if (!res.ok) throw new Error("worker didn't respond right");
 
         document.getElementById("secretGate").style.display = "none";
         document.getElementById("dashboard").style.display = "block";

@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Send Email</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, Arial, sans-serif;
+    background: #0c0c0c;
+    color: #05ee93;
+    margin: 0;
+    padding: 30px;
+}
+
+.wrap {
+    max-width: 640px;
+    margin: 0 auto;
+}
+
+h1 {
+    font-size: 22px;
+    margin-bottom: 4px;
+}
+
+.subtitle {
+    color: #888;
+    font-size: 13px;
+    margin-bottom: 30px;
+}
+
+.card {
+    background: #131313;
+    border: 1px solid #2a2a2a;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+}
+
+label {
+    display: block;
+    font-size: 12px;
+    color: #888;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+input, textarea, select {
+    width: 100%;
+    padding: 10px;
+    background: #0c0c0c;
+    color: #05ee93;
+    border: 1px solid #333;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 14px;
+}
+
+textarea {
+    resize: vertical;
+    min-height: 140px;
+}
+
+.field {
+    margin-bottom: 16px;
+}
+
+.field:last-child {
+    margin-bottom: 0;
+}
+
+.from-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.from-row input {
+    flex: 1;
+}
+
+.from-row span {
+    color: #888;
+    white-space: nowrap;
+}
+
+.mode-toggle {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.mode-toggle button {
+    flex: 1;
+    padding: 8px;
+    background: #0c0c0c;
+    border: 1px solid #333;
+    color: #888;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+}
+
+.mode-toggle button.active {
+    background: #05ee9322;
+    border-color: #05ee93;
+    color: #05ee93;
+}
+
+#sendBtn {
+    width: 100%;
+    padding: 14px;
+    background: #05ee93;
+    color: #000;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+#sendBtn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#status {
+    margin-top: 14px;
+    font-size: 13px;
+}
+
+.error { color: #ff6666; }
+.success { color: #66ff99; }
+
+.hint {
+    font-size: 11px;
+    color: #666;
+    margin-top: 6px;
+}
+
+#secretGate input {
+    margin-bottom: 10px;
+}
+
+#secretGate button {
+    width: 100%;
+    padding: 10px;
+    background: #05ee93;
+    color: #000;
+    border: none;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+}
+
+#dashboard { display: none; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <h1>Send Email</h1>
+  <div class="subtitle">mcbCode admin</div>
+
+  <div id="secretGate" class="card">
+    <label>secret key</label>
+    <input id="secret" type="password" placeholder="secret key">
+    <button onclick="unlock()">Unlock</button>
+  </div>
+
+  <div id="dashboard">
+    <div class="card">
+      <div class="field">
+        <label>From</label>
+        <div class="from-row">
+          <input id="fromUser" placeholder="e.g. hello">
+          <span>@mcbcode.com</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>To</label>
+        <div class="mode-toggle">
+          <button type="button" data-mode="test" onclick="setMode('test')">Test send</button>
+          <button type="button" data-mode="custom" onclick="setMode('custom')">Custom</button>
+          <button type="button" data-mode="users" onclick="setMode('users')">mcbCode users</button>
+        </div>
+
+        <div id="testHint" class="hint" style="display:none;">sends only to micahpcal@gmail.com</div>
+
+        <textarea id="customEmails" placeholder="one email per line, or comma separated" style="display:none; min-height:80px;"></textarea>
+
+        <div id="usersHint" class="hint" style="display:none;">sends to every email in the users table. everyone is bcc'd, nobody sees who else got it.</div>
+      </div>
+
+      <div class="field">
+        <label>Subject</label>
+        <input id="subject" placeholder="subject line">
+      </div>
+
+      <div class="field">
+        <label>Body</label>
+        <div class="mode-toggle">
+          <button type="button" id="htmlBtn" class="active" onclick="setBodyType('html')">HTML</button>
+          <button type="button" id="textBtn" onclick="setBodyType('text')">Plain text</button>
+        </div>
+        <textarea id="body" placeholder="write your email here..."></textarea>
+      </div>
+    </div>
+
+    <button id="sendBtn" onclick="sendEmail()">Send Email</button>
+    <div id="status"></div>
+  </div>
+</div>
+
+<script>
+const WORKER_URL = "https://email.mcbcode.com";
+
+let toMode = "test";
+let bodyType = "html";
+
+function unlock() {
+    if (!document.getElementById("secret").value.trim()) return;
+    document.getElementById("secretGate").style.display = "none";
+    document.getElementById("dashboard").style.display = "block";
+}
+
+function getKey() {
+    return document.getElementById("secret").value.trim();
+}
+
+function setMode(mode) {
+    toMode = mode;
+
+    document.querySelectorAll(".mode-toggle button[data-mode]").forEach(b => {
+        b.classList.toggle("active", b.dataset.mode === mode);
+    });
+
+    document.getElementById("testHint").style.display = mode === "test" ? "block" : "none";
+    document.getElementById("customEmails").style.display = mode === "custom" ? "block" : "none";
+    document.getElementById("usersHint").style.display = mode === "users" ? "block" : "none";
+}
+
+function setBodyType(type) {
+    bodyType = type;
+    document.getElementById("htmlBtn").classList.toggle("active", type === "html");
+    document.getElementById("textBtn").classList.toggle("active", type === "text");
+}
+
+async function sendEmail() {
+    const status = document.getElementById("status");
+    const sendBtn = document.getElementById("sendBtn");
+
+    const fromUser = document.getElementById("fromUser").value.trim();
+    const subject = document.getElementById("subject").value.trim();
+    const content = document.getElementById("body").value;
+
+    if (!fromUser || !subject || !content) {
+        status.textContent = "fill in from, subject, and body first.";
+        status.className = "error";
+        return;
+    }
+
+    let customEmails = [];
+    if (toMode === "custom") {
+        customEmails = document.getElementById("customEmails").value
+            .split(/[\n,]/)
+            .map(e => e.trim())
+            .filter(Boolean);
+
+        if (customEmails.length === 0) {
+            status.textContent = "add at least one email for custom send.";
+            status.className = "error";
+            return;
+        }
+    }
+
+    if (toMode === "users") {
+        const ok = confirm("this will send to EVERY mcbCode user. are you sure?");
+        if (!ok) return;
+    }
+
+    sendBtn.disabled = true;
+    status.textContent = "sending...";
+    status.className = "";
+
+    try {
+        const res = await fetch(`${WORKER_URL}/send`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "x-admin-key": getKey()
+            },
+            body: JSON.stringify({
+                fromUser,
+                toMode,
+                customEmails,
+                subject,
+                content,
+                isHtml: bodyType === "html"
+            })
+        });
+
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        status.textContent = `sent to ${data.sentTo} recipient(s) in ${data.batches} batch(es).`;
+        status.className = "success";
+
+    } catch (err) {
+        status.textContent = "failed: " + err.message;
+        status.className = "error";
+    } finally {
+        sendBtn.disabled = false;
+    }
+}
+
+setMode("test");
+</script>
+
+</body>
+</html>

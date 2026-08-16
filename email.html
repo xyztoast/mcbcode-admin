@@ -170,6 +170,7 @@ textarea {
     <label>secret key</label>
     <input id="secret" type="password" placeholder="secret key">
     <button onclick="unlock()">Unlock</button>
+    <div id="gateStatus" class="hint"></div>
   </div>
 
   <div id="dashboard">
@@ -223,10 +224,38 @@ const WORKER_URL = "https://email.mcbcode.com";
 let toMode = "test";
 let bodyType = "html";
 
-function unlock() {
-    if (!document.getElementById("secret").value.trim()) return;
-    document.getElementById("secretGate").style.display = "none";
-    document.getElementById("dashboard").style.display = "block";
+async function unlock() {
+    const key = getKey();
+    if (!key) return;
+
+    const btn = document.querySelector("#secretGate button");
+    const gateStatus = document.getElementById("gateStatus");
+    btn.disabled = true;
+    gateStatus.textContent = "checking...";
+    gateStatus.className = "";
+
+    try {
+        const res = await fetch(`${WORKER_URL}/check`, {
+            headers: { "x-admin-key": key }
+        });
+
+        if (res.status === 401) {
+            gateStatus.textContent = "wrong key.";
+            gateStatus.className = "error";
+            btn.disabled = false;
+            return;
+        }
+
+        if (!res.ok) throw new Error("worker didn't respond right, check WORKER_URL");
+
+        document.getElementById("secretGate").style.display = "none";
+        document.getElementById("dashboard").style.display = "block";
+
+    } catch (err) {
+        gateStatus.textContent = "couldn't reach the worker: " + err.message;
+        gateStatus.className = "error";
+        btn.disabled = false;
+    }
 }
 
 function getKey() {
